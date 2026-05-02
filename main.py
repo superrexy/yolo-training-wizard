@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import csv
 import json
@@ -559,6 +560,116 @@ def step_check_resume() -> dict | None:
     return selected
 
 
+# ─── Roboflow Snippet Parser ──────────────────────────────────────────────────
+
+
+def _parse_roboflow_snippet(snippet: str) -> dict | None:
+    """
+    Parse a copy-pasted Roboflow code snippet into structured config.
+
+    Expected input format (from Roboflow's 'Download Dataset' page):
+        rf = Roboflow(api_key="KEY")
+        project = rf.workspace("ws").project("proj")
+        version = project.version(N)
+        dataset = version.download("format")
+    """
+    result = {}
+
+    # Regex: Roboflow(api_key="...") — captures the key value
+    api_key_match = re.search(r'Roboflow\(\s*api_key\s*=\s*["\']([^"\']+)["\']', snippet)
+    if api_key_match:
+        result["api_key"] = api_key_match.group(1)
+
+    # Regex: .workspace("...").project("...") — captures both names
+    wp_match = re.search(
+        r'\.workspace\(\s*["\']([^"\']+)["\']\s*\)\s*\.\s*project\(\s*["\']([^"\']+)["\']\s*\)',
+        snippet,
+    )
+    if wp_match:
+        result["workspace"] = wp_match.group(1)
+        result["project"] = wp_match.group(2)
+
+    # Regex: .version(N) — captures integer version
+    version_match = re.search(r'\.version\(\s*(\d+)\s*\)', snippet)
+    if version_match:
+        result["version"] = int(version_match.group(1))
+
+    # Regex: .download("format") — captures format string
+    format_match = re.search(r'\.download\(\s*["\']([^"\']+)["\']\s*\)', snippet)
+    if format_match:
+        result["format"] = format_match.group(1)
+
+    if "api_key" in result and "workspace" in result and "project" in result:
+        result.setdefault("version", 1)
+        result.setdefault("format", "yolo26")
+        return result
+
+    return None
+
+
+def _prompt_roboflow_snippet() -> dict | None:
+    console.print(
+        Panel(
+            "[bold]Paste your Roboflow snippet below[/]\n"
+            "[dim]Copy the code from Roboflow's 'Download Dataset' page.\n"
+            "Paste all lines, then press Enter on an empty line to finish.\n"
+            "Type 'skip' to enter details manually instead.[/]",
+            border_style="yellow",
+            padding=(0, 1),
+        )
+    )
+    console.print()
+
+    lines: list[str] = []
+    try:
+        while True:
+            line = input()
+            if line.strip().lower() == "skip":
+                return None
+            if not line.strip() and lines:
+                snippet = "\n".join(lines)
+                parsed = _parse_roboflow_snippet(snippet)
+                if parsed:
+                    break
+                lines.append(line)
+                continue
+            lines.append(line)
+    except EOFError:
+        pass
+
+    if not lines:
+        return None
+
+    snippet = "\n".join(lines)
+    parsed = _parse_roboflow_snippet(snippet)
+
+    if parsed:
+        console.print()
+        console.print("[green]Snippet parsed successfully![/]")
+
+        table = Table(title="Parsed from Snippet", box=box.ROUNDED)
+        table.add_column("Field", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("API Key", _mask_key(parsed["api_key"]))
+        table.add_row("Workspace", parsed["workspace"])
+        table.add_row("Project", parsed["project"])
+        table.add_row("Version", str(parsed["version"]))
+        table.add_row("Format", parsed["format"])
+        console.print(table)
+        console.print()
+
+        if Confirm.ask("[yellow]Use these settings?[/]", default=True):
+            return parsed
+        else:
+            console.print("[dim]Switching to manual input...[/]")
+            return None
+    else:
+        console.print("[red]Could not parse the snippet. Switching to manual input...[/]")
+        console.print("[dim]Make sure you paste the full Roboflow code block including the api_key line.[/]")
+        console.print()
+        return None
+
+
 # ─── Step 1: Download Dataset ─────────────────────────────────────────────────
 
 
@@ -566,16 +677,41 @@ def step_download_dataset() -> dict:
     console.print(Rule("[bold cyan]Step 1: Download Dataset from Roboflow[/]"))
     console.print()
 
-    api_key = _prompt_api_key()
-    console.print()
-    workspace = Prompt.ask("[yellow]Workspace name[/]")
-    project_name = Prompt.ask("[yellow]Project name[/]")
-    version_number = IntPrompt.ask("[yellow]Dataset version[/]", default=1)
-    dataset_format = Prompt.ask(
-        "[yellow]Export format[/]",
-        default="yolo26",
-        choices=["yolo26", "yolov12", "yolov11", "yolov8", "yolov5", "yolov7", "yolov9", "coco", "voc"],
+    input_method = Prompt.ask(
+        "[yellow]How would you like to configure the dataset?[/]",
+        choices=["paste", "manual"],
+        default="paste",
     )
+
+    snippet_data = None
+    if input_method == "paste":
+        console.print()
+        snippet_data = _prompt_roboflow_snippet()
+
+    if snippet_data:
+        api_key = snippet_data["api_key"]
+        workspace = snippet_data["workspace"]
+        project_name = snippet_data["project"]
+        version_number = snippet_data["version"]
+        dataset_format = snippet_data["format"]
+
+        save_key = Confirm.ask("[yellow]Save this API key for future use?[/]", default=True)
+        if save_key:
+            config = _load_config()
+            config["roboflow_api_key"] = api_key
+            _save_config(config)
+            console.print(f"[green]API key saved to {CONFIG_FILE}[/]")
+    else:
+        api_key = _prompt_api_key()
+        console.print()
+        workspace = Prompt.ask("[yellow]Workspace name[/]")
+        project_name = Prompt.ask("[yellow]Project name[/]")
+        version_number = IntPrompt.ask("[yellow]Dataset version[/]", default=1)
+        dataset_format = Prompt.ask(
+            "[yellow]Export format[/]",
+            default="yolo26",
+            choices=["yolo26", "yolov12", "yolov11", "yolov8", "yolov5", "yolov7", "yolov9", "coco", "voc"],
+        )
 
     console.print()
 
@@ -1674,8 +1810,8 @@ def main():
                 "[cyan]5.[/] View Training Summary\n"
                 "[cyan]6.[/] Export Model (ONNX/TensorRT/etc.)\n"
                 "[cyan]7.[/] Export Results (Zip)\n\n"
-                "[dim]Features: Auto-batch, Resume, YOLO26 defaults, Augmentation presets,[/]\n"
-                "[dim]Health checks, Model export, HP tuning mode[/]"
+                "[dim]Features: Roboflow paste-to-train, Auto-batch, Resume, YOLO26 defaults,[/]\n"
+                "[dim]Augmentation presets, Health checks, Model export, HP tuning mode[/]"
             ),
             border_style="bright_blue",
             padding=(1, 2),
