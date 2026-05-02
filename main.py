@@ -1141,7 +1141,7 @@ def step_configure_training(dataset_info: dict) -> dict:
         "task": task,
         "data": dataset_info["data_yaml"],
         "device": device,
-        "project": str(OUTPUT_DIR / project_name),
+        "project": project_name,
         "name": run_name,
         **smart_defaults,
         **config,
@@ -1252,7 +1252,7 @@ def step_train(config: dict, resume_info: dict | None = None) -> dict:
         "[yellow]Launch TensorBoard for live monitoring?[/]", default=True
     )
 
-    logdir = config.get("project", str(OUTPUT_DIR)) if not resume_info else str(Path(resume_info["dir"]).parent)
+    logdir = str(OUTPUT_DIR / config.get("task", "detect") / config.get("project", "")) if not resume_info else str(Path(resume_info["dir"]).parent)
     tb_process = None
 
     if use_tensorboard:
@@ -1276,7 +1276,7 @@ def step_train(config: dict, resume_info: dict | None = None) -> dict:
         model = YOLO(config["model"])
 
         console.print("[bold]Starting training...[/]")
-        console.print(f"[dim]Output directory: {config['project']}/{config['name']}[/]")
+        console.print(f"[dim]Output directory: {OUTPUT_DIR}/{config.get('task', 'detect')}/{config['project']}/{config['name']}[/]")
         console.print()
 
         # Build train args (exclude non-training keys)
@@ -1463,6 +1463,198 @@ def _display_metrics_from_csv(csv_path: Path) -> None:
         console.print(f"[yellow]Could not parse results.csv: {e}[/]")
 
 
+def _generate_training_summary_paragraph(
+    config: dict, dataset_info: dict, train_info: dict, train_dir: Path
+) -> str:
+    """
+    Generate an intelligent summary paragraph based on training overview and metrics.
+    Provides assessment and actionable recommendations.
+    """
+    model = config.get("model", "unknown")
+    epochs = config.get("epochs", 0)
+    imgsz = config.get("imgsz", 640)
+    batch = config.get("batch", -1)
+    elapsed = train_info.get("elapsed_seconds", 0)
+    dataset_name = f"{dataset_info['project']} v{dataset_info['version']}"
+
+    # Parse metrics from CSV if available
+    final_metrics = {}
+    best_metrics = {}
+    results_csv = train_dir / "results.csv"
+    if results_csv.exists():
+        try:
+            with open(results_csv) as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+            if rows:
+                # Final epoch
+                for key, value in rows[-1].items():
+                    try:
+                        final_metrics[key.strip()] = float(value.strip())
+                    except (ValueError, AttributeError):
+                        pass
+                # Best epoch (by mAP50-95)
+                map_col = None
+                for col in rows[0].keys():
+                    col_stripped = col.strip()
+                    if "metrics/mAP50-95" in col_stripped or "mAP_0.5:0.95" in col_stripped:
+                        map_col = col
+                        break
+                if map_col:
+                    best_row = max(rows, key=lambda r: float(r.get(map_col, "0").strip() or "0"))
+                    for key, value in best_row.items():
+                        try:
+                            best_metrics[key.strip()] = float(value.strip())
+                        except (ValueError, AttributeError):
+                            pass
+        except Exception:
+            pass
+
+    # Extract key metrics
+    final_map50 = final_metrics.get("metrics/mAP50(B)", 0)
+    final_map50_95 = final_metrics.get("metrics/mAP50-95(B)", 0)
+    final_precision = final_metrics.get("metrics/precision(B)", 0)
+    final_recall = final_metrics.get("metrics/recall(B)", 0)
+    best_map50 = best_metrics.get("metrics/mAP50(B)", 0)
+    best_map50_95 = best_metrics.get("metrics/mAP50-95(B)", 0)
+    best_epoch = best_metrics.get("epoch", 0)
+    final_epoch = final_metrics.get("epoch", epochs)
+    train_box_loss = final_metrics.get("train/box_loss", 0)
+    val_box_loss = final_metrics.get("val/box_loss", 0)
+    val_cls_loss = final_metrics.get("val/cls_loss", 0)
+
+    # ─── Build assessment ─────────────────────────────────────────────────────
+    paragraphs = []
+
+    # Overall performance assessment
+    if best_map50_95 >= 0.7:
+        quality = "sangat baik"
+        quality_emoji = "[bold green]"
+    elif best_map50_95 >= 0.5:
+        quality = "baik"
+        quality_emoji = "[green]"
+    elif best_map50_95 >= 0.3:
+        quality = "cukup"
+        quality_emoji = "[yellow]"
+    elif best_map50_95 >= 0.1:
+        quality = "kurang"
+        quality_emoji = "[red]"
+    else:
+        quality = "sangat rendah"
+        quality_emoji = "[bold red]"
+
+    # Time formatting
+    if elapsed > 0:
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        time_str = f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m {int(elapsed % 60)}s"
+    else:
+        time_str = "N/A"
+
+    # Main summary paragraph
+    summary = (
+        f"Training model [bold]{model}[/] pada dataset [bold]{dataset_name}[/] "
+        f"telah selesai dalam waktu [bold]{time_str}[/] dengan total [bold]{int(final_epoch)}[/] epoch. "
+        f"Performa terbaik dicapai pada epoch [bold]{int(best_epoch)}[/] dengan "
+        f"mAP50 = [bold]{best_map50:.4f}[/] dan mAP50-95 = [bold]{best_map50_95:.4f}[/]. "
+        f"Secara keseluruhan, hasil training ini dinilai {quality_emoji}{quality}[/]."
+    )
+    paragraphs.append(summary)
+
+    # ─── Diagnosis & Recommendations ──────────────────────────────────────────
+    recommendations = []
+
+    # Check for overfitting (best epoch much earlier than final)
+    if final_epoch > 0 and best_epoch > 0:
+        epoch_ratio = best_epoch / final_epoch
+        if epoch_ratio < 0.2 and final_epoch > 10:
+            recommendations.append(
+                "[yellow]Overfitting terdeteksi:[/] Performa terbaik di epoch awal "
+                f"({int(best_epoch)}/{int(final_epoch)}). Model mulai overfit setelahnya. "
+                "Coba kurangi epoch, tambah augmentasi, atau gunakan early stopping (patience lebih kecil)."
+            )
+
+    # Check for underfitting (low metrics overall)
+    if best_map50_95 < 0.2 and best_map50 < 0.5:
+        recommendations.append(
+            "[yellow]Underfitting terdeteksi:[/] mAP sangat rendah. Kemungkinan penyebab: "
+            "dataset terlalu kecil, label kurang akurat, atau model terlalu kecil untuk task ini. "
+            "Coba: (1) tambah data training, (2) periksa kualitas anotasi, "
+            "(3) gunakan model lebih besar (m/l/x), (4) tambah epoch."
+        )
+
+    # Check precision vs recall imbalance
+    if final_precision > 0 and final_recall > 0:
+        if final_precision > 0.8 and final_recall < 0.3:
+            recommendations.append(
+                "[yellow]Precision tinggi tapi Recall rendah:[/] Model sangat selektif — "
+                "hanya mendeteksi objek yang sangat yakin. Banyak objek terlewat. "
+                "Coba: turunkan confidence threshold saat inference, atau tambah data training."
+            )
+        elif final_recall > 0.8 and final_precision < 0.3:
+            recommendations.append(
+                "[yellow]Recall tinggi tapi Precision rendah:[/] Model terlalu banyak false positive. "
+                "Coba: tambah negative samples, periksa label yang ambigu, atau naikkan confidence threshold."
+            )
+
+    # Check val loss vs train loss (generalization gap)
+    if train_box_loss > 0 and val_box_loss > 0:
+        loss_ratio = val_box_loss / train_box_loss
+        if loss_ratio > 2.0:
+            recommendations.append(
+                f"[yellow]Gap train/val loss besar:[/] val_box_loss ({val_box_loss:.3f}) "
+                f"jauh lebih tinggi dari train_box_loss ({train_box_loss:.3f}). "
+                "Ini menandakan overfitting. Coba: tambah augmentasi (heavy), "
+                "gunakan dropout, atau tambah data."
+            )
+
+    # Check classification loss
+    if val_cls_loss > 3.0:
+        recommendations.append(
+            f"[yellow]Classification loss tinggi ({val_cls_loss:.3f}):[/] "
+            "Model kesulitan membedakan antar kelas. "
+            "Coba: periksa apakah ada kelas yang mirip/overlap, "
+            "tambah data per kelas, atau gunakan label smoothing."
+        )
+
+    # Epoch count recommendations
+    if epochs <= 20 and best_map50_95 < 0.5:
+        recommendations.append(
+            "[cyan]Epoch terlalu sedikit:[/] Dengan hanya "
+            f"{epochs} epoch, model mungkin belum konvergen. "
+            "Coba naikkan ke 100-300 epoch untuk hasil lebih baik."
+        )
+
+    # Image size recommendation
+    if imgsz < 640 and best_map50_95 < 0.4:
+        recommendations.append(
+            f"[cyan]Image size kecil ({imgsz}):[/] "
+            "Untuk objek kecil atau detail, coba naikkan ke 640 atau 1280."
+        )
+
+    # Batch size recommendation
+    if batch == -1:
+        recommendations.append(
+            "[dim]Auto-batch digunakan — GPU memory dioptimalkan secara otomatis.[/]"
+        )
+
+    # Good performance acknowledgment
+    if best_map50_95 >= 0.5 and not recommendations:
+        recommendations.append(
+            "[green]Model sudah memiliki performa yang baik![/] "
+            "Untuk peningkatan lebih lanjut, coba: fine-tune dengan learning rate lebih kecil, "
+            "tambah data, atau gunakan Test-Time Augmentation (TTA) saat inference."
+        )
+    elif best_map50_95 >= 0.7:
+        recommendations.insert(
+            0,
+            "[green]Performa sangat baik![/] Model siap untuk deployment. "
+            "Pertimbangkan export ke ONNX/TensorRT untuk inference lebih cepat."
+        )
+
+    return summary, recommendations
+
+
 def step_summary(train_info: dict, config: dict, dataset_info: dict) -> None:
     console.print(Rule("[bold cyan]Step 5: Training Summary[/]"))
     console.print()
@@ -1499,6 +1691,36 @@ def step_summary(train_info: dict, config: dict, dataset_info: dict) -> None:
 
     console.print(overview)
     console.print()
+
+    # ─── Training Summary Paragraph & Recommendations ─────────────────────────
+    try:
+        summary_text, recommendations = _generate_training_summary_paragraph(
+            config, dataset_info, train_info, train_dir
+        )
+
+        console.print(
+            Panel(
+                summary_text,
+                title="[bold]Ringkasan Training[/]",
+                border_style="bright_blue",
+                padding=(1, 2),
+            )
+        )
+        console.print()
+
+        if recommendations:
+            rec_text = "\n".join(f"  {i}. {rec}" for i, rec in enumerate(recommendations, 1))
+            console.print(
+                Panel(
+                    rec_text,
+                    title="[bold]Rekomendasi & Saran[/]",
+                    border_style="yellow",
+                    padding=(1, 2),
+                )
+            )
+            console.print()
+    except Exception:
+        pass  # Don't break the wizard if summary generation fails
 
     # Metrics from CSV
     results_csv = train_dir / "results.csv"
