@@ -1086,9 +1086,41 @@ def step_health_checks(config: dict, dataset_info: dict) -> None:
 # ─── Step 3: Train Model ─────────────────────────────────────────────────────
 
 
+def _launch_tensorboard(logdir: str) -> subprocess.Popen | None:
+    """Launch TensorBoard in background and return the process handle."""
+    if not shutil.which("tensorboard"):
+        console.print("[yellow]TensorBoard not found. Install with: pip install tensorboard[/]")
+        return None
+
+    port = 6006
+    try:
+        proc = subprocess.Popen(
+            ["tensorboard", "--logdir", logdir, "--port", str(port), "--bind_all"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        console.print(f"[green]TensorBoard started at:[/] [bold]http://localhost:{port}[/]")
+        console.print(f"[dim]Logging directory: {logdir}[/]")
+        console.print()
+        return proc
+    except OSError as e:
+        console.print(f"[yellow]Failed to start TensorBoard: {e}[/]")
+        return None
+
+
 def step_train(config: dict, resume_info: dict | None = None) -> dict:
     console.print(Rule("[bold cyan]Step 3: Training Model[/]"))
     console.print()
+
+    use_tensorboard = Confirm.ask(
+        "[yellow]Launch TensorBoard for live monitoring?[/]", default=True
+    )
+
+    logdir = config.get("project", str(OUTPUT_DIR)) if not resume_info else str(Path(resume_info["dir"]).parent)
+    tb_process = None
+
+    if use_tensorboard:
+        tb_process = _launch_tensorboard(logdir)
 
     from ultralytics import YOLO
 
@@ -1125,6 +1157,17 @@ def step_train(config: dict, resume_info: dict | None = None) -> dict:
     console.print("[bold green]Training complete![/]")
     console.print(f"[dim]Results saved to: {train_dir}[/]")
     console.print(f"[dim]Total time: {elapsed/60:.1f} minutes[/]")
+
+    if tb_process and tb_process.poll() is None:
+        console.print()
+        keep_tb = Confirm.ask(
+            "[yellow]TensorBoard is still running. Keep it open?[/]", default=False
+        )
+        if not keep_tb:
+            tb_process.terminate()
+            tb_process.wait(timeout=5)
+            console.print("[dim]TensorBoard stopped.[/]")
+
     console.print()
 
     return {
