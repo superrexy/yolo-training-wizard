@@ -1296,6 +1296,9 @@ def step_train(config: dict, resume_info: dict | None = None) -> dict:
     tb_process = None
 
     if use_tensorboard:
+        from ultralytics import settings
+        settings.update({"tensorboard": True})
+        console.print("[dim]TensorBoard logging enabled (yolo settings tensorboard=True)[/]")
         tb_process = _launch_tensorboard(logdir)
 
     from ultralytics import YOLO
@@ -1325,7 +1328,7 @@ def step_train(config: dict, resume_info: dict | None = None) -> dict:
         results = model.train(**train_args)
 
     # Use actual save directory from YOLO results (handles suffix increments like train2, train3)
-    train_dir = Path(str(results.save_dir))
+    train_dir = Path(str(model.trainer.save_dir))
 
     elapsed = time.time() - start_time
 

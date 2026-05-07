@@ -261,7 +261,7 @@ runs/
 - **Objek kecil**: Gunakan preset "Small Objects" (imgsz=1280)
 - **Training cepat untuk testing**: Gunakan preset "Quick Test"
 - **Resume training**: Wizard otomatis mendeteksi training yang terinterupsi dan menawarkan resume
-- **TensorBoard**: Wizard menawarkan launch TensorBoard untuk monitoring real-time
+- **TensorBoard**: Wizard menawarkan launch TensorBoard untuk monitoring real-time. Wizard otomatis mengaktifkan TensorBoard logging (`yolo settings tensorboard=True`) sebelum training dimulai. Lihat [dokumentasi TensorBoard](https://docs.ultralytics.com/integrations/tensorboard/#usage) untuk detail lebih lanjut
 
 ## License
 
