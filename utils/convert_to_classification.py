@@ -96,8 +96,10 @@ def validate_dataset(input_path: Path) -> tuple[dict[int, str], list[tuple[str, 
         sys.exit(1)
 
     names = data["names"]
-    if not isinstance(names, dict):
-        console.print("[bold red]Error:[/] 'names' must be a dict (int -> str mapping)")
+    if isinstance(names, list):
+        names = {i: name for i, name in enumerate(names)}
+    elif not isinstance(names, dict):
+        console.print("[bold red]Error:[/] 'names' must be a dict or list of class names")
         sys.exit(1)
 
     splits: list[tuple[str, str]] = []
