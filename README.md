@@ -255,6 +255,167 @@ runs/
 └─────────────────────────────────────────────┘
 ```
 
+---
+
+## Classification Training Wizard
+
+Wizard terpisah untuk training model **YOLO Classification** — mengklasifikasikan gambar ke dalam kelas (bukan mendeteksi objek).
+
+### Features (Classification)
+
+- **Auto-Convert Detection → Classification** — Otomatis mengkonversi dataset detection (Roboflow) ke format classification
+- **Folder-Based Dataset** — Tidak perlu `data.yaml`, cukup struktur folder `train/class_name/*.jpg`
+- **Classification Models** — YOLO26-cls, YOLO11-cls, YOLOv8-cls (semua ukuran n/s/m/l/x)
+- **Top-1 & Top-5 Accuracy** — Metrik evaluasi khusus classification (bukan mAP)
+- **Dropout Support** — Parameter regularisasi khusus classification
+- **Classification Augmentation** — Tanpa mosaic/mixup/copy_paste (khusus detection)
+- **Training Summary** — Analisis performa dengan rekomendasi dalam Bahasa Indonesia
+
+### Supported Classification Models
+
+| Generation      | Variants                                                        |
+| --------------- | --------------------------------------------------------------- |
+| YOLO26 (Latest) | yolo26n-cls, yolo26s-cls, yolo26m-cls, yolo26l-cls, yolo26x-cls |
+| YOLO11          | yolo11n-cls, yolo11s-cls, yolo11m-cls, yolo11l-cls, yolo11x-cls |
+| YOLOv8          | yolov8n-cls, yolov8s-cls, yolov8m-cls, yolov8l-cls, yolov8x-cls |
+
+> **Catatan:** YOLO12 tidak memiliki pretrained classification weights, sehingga tidak tersedia di wizard ini.
+
+### Penggunaan (Classification)
+
+```bash
+# Jalankan classification wizard
+MPLBACKEND=Agg uv run classify_wizard.py
+
+# Hyperparameter tuning mode
+MPLBACKEND=Agg uv run classify_wizard.py --tune
+
+# Verbose mode (debug)
+MPLBACKEND=Agg uv run classify_wizard.py --verbose
+```
+
+### Google Colab (Classification)
+
+```python
+# Cell 1: Install uv + clone (sama seperti detection wizard)
+!curl -LsSf https://astral.sh/uv/install.sh | sh
+!source $HOME/.local/bin/env
+!git clone https://github.com/superrexy/yolo-training-wizard.git
+%cd yolo-training-wizard
+```
+
+```python
+# Cell 2: Jalankan classification wizard
+%%shell
+MPLBACKEND=Agg uv run classify_wizard.py
+```
+
+### Dataset Format (Classification)
+
+Classification wizard menerima dua format dataset:
+
+**1. Classification format (langsung digunakan):**
+
+```
+dataset/
+├── train/
+│   ├── class_a/
+│   │   ├── img001.jpg
+│   │   └── img002.jpg
+│   └── class_b/
+│       ├── img003.jpg
+│       └── img004.jpg
+├── val/   (opsional)
+│   ├── class_a/
+│   └── class_b/
+└── test/  (opsional)
+```
+
+**2. Detection format (auto-convert):**
+
+```
+dataset/
+├── data.yaml
+├── train/
+│   ├── images/
+│   └── labels/
+└── valid/
+    ├── images/
+    └── labels/
+```
+
+Jika dataset dari Roboflow dalam format detection, wizard otomatis mengkonversi ke classification menggunakan `utils/convert_to_classification.py` — crop bounding box dengan margin 15%, letterbox resize ke 224x224, dan organisasi ke folder per kelas.
+
+### Classification Training Presets
+
+| Preset              | Epochs | Image Size | Batch | Patience | Deskripsi                                    |
+| ------------------- | ------ | ---------- | ----- | -------- | -------------------------------------------- |
+| **Quick Test**      | 10     | 224        | 64    | 5        | Validasi cepat bahwa semuanya berjalan       |
+| **Balanced**        | 50     | 224        | 32    | 15       | Kualitas baik dengan waktu training wajar    |
+| **Maximum Quality** | 150    | 224        | 16    | 30       | Hasil terbaik — training lama (+ cosine LR)  |
+| **Fine-Tune**       | 30     | 224        | 32    | 10       | Fine-tune pretrained model (frozen backbone) |
+| **Custom**          | -      | -          | -     | -        | Konfigurasi manual semua parameter           |
+
+### Classification Workflow
+
+```
+┌─────────────────────────────────────────────┐
+│     YOLO Classification Training Wizard     │
+├─────────────────────────────────────────────┤
+│ 1. Download/Select Classification Dataset   │
+│ 2. Configure Training (Presets/Custom)      │
+│ 3. Pre-Training Health Checks               │
+│ 4. Train Model (+ TensorBoard)             │
+│ 5. Validate Model (Top-1/Top-5 Accuracy)   │
+│ 6. Training Summary & Recommendations       │
+│ 7. Export Model (ONNX/TensorRT/etc.)       │
+│ 8. Zip Results                              │
+└─────────────────────────────────────────────┘
+```
+
+### Struktur Output (Classification)
+
+```
+runs/
+└── classify/
+    └── train-<project>/
+        └── <run_name>/
+            ├── weights/
+            │   ├── best.pt          # Model terbaik
+            │   └── last.pt          # Checkpoint terakhir
+            ├── results.csv          # Metrics per epoch
+            ├── args.yaml            # Training arguments
+            ├── confusion_matrix.png
+            ├── results.png
+            └── ...
+```
+
+### Standalone Conversion Tool
+
+Untuk mengkonversi dataset detection ke classification secara manual (tanpa wizard):
+
+```bash
+# Basic usage
+uv run utils/convert_to_classification.py -i datasets/my-project-1 -o datasets/my-project-cls
+
+# Custom margin dan size
+uv run utils/convert_to_classification.py -i datasets/my-project-1 -o datasets/my-project-cls --margin 0.2 --size 320
+
+# Overwrite existing output
+uv run utils/convert_to_classification.py -i datasets/my-project-1 -o datasets/my-project-cls --overwrite
+```
+
+| Parameter     | Default | Deskripsi                                    |
+| ------------- | ------- | -------------------------------------------- |
+| `--input`     | -       | Path ke dataset detection (berisi data.yaml) |
+| `--output`    | -       | Path output untuk dataset classification     |
+| `--margin`    | 0.15    | Margin di sekitar bounding box (15%)         |
+| `--size`      | 224     | Ukuran output crop (224x224)                 |
+| `--min-size`  | 32      | Minimum ukuran crop (skip jika lebih kecil)  |
+| `--overwrite` | false   | Overwrite output directory jika sudah ada    |
+
+---
+
 ## Tips
 
 - **Dataset kecil (<100 images)**: Gunakan preset "Fine-Tune" dengan augmentasi "Heavy"
