@@ -429,6 +429,18 @@ def _is_yolo26(model_name: str) -> bool:
     return "yolo26" in model_name.lower()
 
 
+def _get_gpu_count(device: str) -> int:
+    """Get the number of GPUs from a device string like '0,1' or '0,1,2,3'."""
+    if "," in device:
+        return len([d.strip() for d in device.split(",") if d.strip()])
+    return 1 if device not in ("cpu", "mps") else 0
+
+
+def _is_multi_gpu(device: str) -> bool:
+    """Check if device string indicates multi-GPU training."""
+    return "," in device
+
+
 def _parse_batch_input(batch_str: str, device: str) -> int | float:
     """Parse batch size input: 'auto' -> -1, 'auto-70' -> 0.7, integer -> int."""
     batch_str = batch_str.strip().lower()
@@ -503,6 +515,9 @@ def _run_health_checks(config: dict, dataset_info: dict) -> list[tuple[str, str]
     device = config.get("device", "cpu")
     if batch == -1 and device == "cpu":
         checks.append(("warning", "Auto-batch requires GPU. Falling back to batch=16 for CPU."))
+    if (batch == -1 or isinstance(batch, float)) and _is_multi_gpu(device):
+        gpu_count = _get_gpu_count(device)
+        checks.append(("error", f"Auto-batch not supported for Multi-GPU training. Specify batch size as multiple of {gpu_count}."))
 
     # 5. Image size check
     imgsz = config.get("imgsz", 640)
@@ -1012,6 +1027,17 @@ def step_configure_training(dataset_info: dict) -> dict:
             console.print("[yellow]  Auto-batch requires GPU. Using batch=16.[/]")
             batch = 16
 
+        # Fallback for Multi-GPU (AutoBatch not supported with DDP)
+        if (batch == -1 or isinstance(batch, float)) and _is_multi_gpu(device):
+            gpu_count = _get_gpu_count(device)
+            default_batch = 16 * gpu_count
+            console.print(f"[yellow]  Auto-batch not supported for Multi-GPU training ({gpu_count} GPUs).[/]")
+            console.print(f"[yellow]  Batch size must be an integer multiple of GPU count ({gpu_count}).[/]")
+            batch = IntPrompt.ask(f"[yellow]  Enter batch size (multiple of {gpu_count})[/]", default=default_batch)
+            if batch % gpu_count != 0:
+                batch = (batch // gpu_count) * gpu_count
+                console.print(f"[yellow]  Adjusted batch to {batch} (must be multiple of {gpu_count}).[/]")
+
         img_size = IntPrompt.ask("[yellow]  Image size[/]", default=640)
         lr0 = FloatPrompt.ask("[yellow]  Initial learning rate[/]", default=0.01)
         patience = IntPrompt.ask("[yellow]  Early stopping patience[/]", default=50)
@@ -1035,6 +1061,20 @@ def step_configure_training(dataset_info: dict) -> dict:
         if config.get("batch") == -1 and device == "cpu":
             console.print("[yellow]Auto-batch requires GPU. Using batch=16.[/]")
             config["batch"] = 16
+
+        # Fix auto-batch for Multi-GPU (AutoBatch not supported with DDP)
+        batch_val = config.get("batch", 16)
+        if (batch_val == -1 or isinstance(batch_val, float)) and _is_multi_gpu(device):
+            gpu_count = _get_gpu_count(device)
+            default_batch = 16 * gpu_count
+            console.print(f"[yellow]Auto-batch not supported for Multi-GPU training ({gpu_count} GPUs).[/]")
+            console.print(f"[yellow]Batch size must be an integer multiple of GPU count ({gpu_count}).[/]")
+            config["batch"] = IntPrompt.ask(
+                f"[yellow]Enter batch size (multiple of {gpu_count})[/]", default=default_batch
+            )
+            if config["batch"] % gpu_count != 0:
+                config["batch"] = (config["batch"] // gpu_count) * gpu_count
+                console.print(f"[yellow]Adjusted batch to {config['batch']} (must be multiple of {gpu_count}).[/]")
 
         # Allow overriding key preset values
         console.print()
