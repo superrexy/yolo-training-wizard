@@ -832,7 +832,7 @@ def step_configure_training(dataset_info: dict) -> dict:
 
     console.print()
     project_name = Prompt.ask("[yellow]Output project name[/]", default=f"train-{dataset_info['project']}")
-    run_name = Prompt.ask("[yellow]Run name[/]", default=datetime.now().strftime("%Y%m%d_%H%M%S"))
+    run_name = Prompt.ask("[yellow]Run name[/]", default=f"{dataset_info['project']}_classify_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
     console.print()
     use_advanced = Confirm.ask("[yellow]Configure advanced options?[/]", default=False)

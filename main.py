@@ -996,6 +996,13 @@ def step_configure_training(dataset_info: dict) -> dict:
     model = _select_model()
     task = Prompt.ask("[yellow]Task[/]", default="detect", choices=TASKS)
 
+    # Append task suffix to model name (e.g. yolo26n.pt -> yolo26n-seg.pt)
+    TASK_SUFFIX = {"detect": "", "segment": "-seg", "classify": "-cls", "pose": "-pose", "obb": "-obb"}
+    if task != "detect":
+        suffix = TASK_SUFFIX[task]
+        model = model.replace(".pt", f"{suffix}.pt")
+        console.print(f"[dim]Model adjusted for {task} task: {model}[/]")
+
     console.print()
 
     # Preset selection
@@ -1094,7 +1101,7 @@ def step_configure_training(dataset_info: dict) -> dict:
     )
     run_name = Prompt.ask(
         "[yellow]Run name[/]",
-        default=datetime.now().strftime("%Y%m%d_%H%M%S"),
+        default=f"{dataset_info['project']}_{task}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
     )
 
     # Advanced options (categorized)
@@ -1176,10 +1183,12 @@ def step_configure_training(dataset_info: dict) -> dict:
         smart_defaults["save_period"] = save_period
 
     # Build final config
+    # For classify tasks, use folder path (no data.yaml); otherwise use data.yaml
+    data_value = dataset_info["path"] if task == "classify" else dataset_info["data_yaml"]
     final_config = {
         "model": model,
         "task": task,
-        "data": dataset_info["data_yaml"],
+        "data": data_value,
         "device": device,
         "project": project_name,
         "name": run_name,
