@@ -1376,8 +1376,17 @@ def step_validate(train_info: dict, config: dict) -> dict | None:
     console.print("[bold]Running validation...[/]")
     console.print()
 
+    # Resolve dataset path: prefer config, fallback to args.yaml from training output
+    data_path = config.get("data")
+    if not data_path:
+        args_yaml = Path(train_info["train_dir"]) / "args.yaml"
+        if args_yaml.exists():
+            with open(args_yaml) as f:
+                train_args = yaml.safe_load(f) or {}
+            data_path = train_args.get("data")
+
     val_args = {
-        "data": config.get("data"),
+        "data": data_path,
         "imgsz": config.get("imgsz", 640),
         "batch": config.get("batch", 16) if config.get("batch", 16) != -1 else 16,
         "device": config.get("device", "cpu"),

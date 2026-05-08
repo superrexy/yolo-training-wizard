@@ -122,6 +122,13 @@ def _prompt_api_key() -> str:
     return new_key
 
 
+def _normalize_split_dirs(dataset_path: Path) -> None:
+    valid_dir = dataset_path / "valid"
+    val_dir = dataset_path / "val"
+    if valid_dir.is_dir() and not val_dir.exists():
+        valid_dir.rename(val_dir)
+
+
 def _validate_cls_dataset(dataset_path: Path) -> dict:
     """Validate classification dataset structure (folder-based).
     Returns dict with 'classes' list, 'splits' dict of {split: {class: count}}.
@@ -132,6 +139,7 @@ def _validate_cls_dataset(dataset_path: Path) -> dict:
     if not dataset_path.is_dir():
         console.print(f"[bold red]Error:[/] Dataset path is not a directory: {dataset_path}")
         sys.exit(1)
+    _normalize_split_dirs(dataset_path)
 
     possible_splits = ["train", "val", "test"]
     found_splits: dict[str, Path] = {}
@@ -386,7 +394,7 @@ def _parse_roboflow_snippet(snippet: str) -> dict | None:
         result["format"] = format_match.group(1)
     if "api_key" in result and "workspace" in result and "project" in result:
         result.setdefault("version", 1)
-        result.setdefault("format", "yolo26")
+        result.setdefault("format", "folder")
         return result
     return None
 
@@ -584,7 +592,7 @@ def step_download_dataset() -> dict:
             workspace = Prompt.ask("[yellow]Workspace name[/]")
             project_name = Prompt.ask("[yellow]Project name[/]")
             version_number = IntPrompt.ask("[yellow]Dataset version[/]", default=1)
-            dataset_format = Prompt.ask("[yellow]Export format[/]", default="yolo26", choices=["yolo26", "yolov12", "yolov11", "yolov8", "yolov5", "yolov7", "yolov9", "coco", "voc"])
+            dataset_format = Prompt.ask("[yellow]Export format[/]", default="folder", choices=["folder", "yolo26", "yolov12", "yolov11", "yolov8", "yolov5", "yolov7", "yolov9", "coco", "voc"])
 
         console.print()
         with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
@@ -1011,7 +1019,15 @@ def step_validate(train_info: dict, config: dict) -> object | None:
     model = YOLO(train_info["model_path"])
     console.print("[bold]Running validation...[/]")
     console.print()
-    val_args: dict = {"data": config.get("data"), "imgsz": config.get("imgsz", 224), "batch": config.get("batch", 32) if config.get("batch", 32) != -1 else 32, "device": config.get("device", "cpu"), "plots": True, "verbose": True}
+    # Resolve dataset path: prefer config, fallback to args.yaml from training output
+    data_path = config.get("data")
+    if not data_path:
+        args_yaml = Path(train_info["train_dir"]) / "args.yaml"
+        if args_yaml.exists():
+            with open(args_yaml) as f:
+                train_args = yaml.safe_load(f) or {}
+            data_path = train_args.get("data")
+    val_args: dict = {"data": data_path, "imgsz": config.get("imgsz", 224), "batch": config.get("batch", 32) if config.get("batch", 32) != -1 else 32, "device": config.get("device", "cpu"), "plots": True, "verbose": True}
     metrics = model.val(**val_args)
     console.print()
     val_table = Table(title="Classification Validation Results", box=box.ROUNDED)
