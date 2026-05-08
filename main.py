@@ -1412,13 +1412,17 @@ def step_validate(train_info: dict, config: dict) -> dict | None:
     val_table.add_column("Value", style="green")
 
     try:
-        if hasattr(metrics, "box"):
+        task = config.get("task", "detect")
+        if task == "classify" and hasattr(metrics, "top1"):
+            val_table.add_row("Top-1 Accuracy", f"{metrics.top1:.4f}")
+            val_table.add_row("Top-5 Accuracy", f"{metrics.top5:.4f}")
+            console.print(val_table)
+        elif hasattr(metrics, "box"):
             val_table.add_row("mAP50", f"{metrics.box.map50:.4f}")
             val_table.add_row("mAP50-95", f"{metrics.box.map:.4f}")
             val_table.add_row("Precision", f"{metrics.box.mp:.4f}")
             val_table.add_row("Recall", f"{metrics.box.mr:.4f}")
 
-            # Per-class mAP (Phase 3.3)
             if hasattr(metrics.box, "maps") and metrics.box.maps is not None:
                 console.print(val_table)
                 console.print()
@@ -1448,8 +1452,7 @@ def step_validate(train_info: dict, config: dict) -> dict | None:
 # ─── Step 5: Training Summary (Enhanced - Phase 3.3) ──────────────────────────
 
 
-def _find_best_epoch(csv_path: Path) -> dict | None:
-    """Find the epoch with best mAP50-95."""
+def _find_best_epoch(csv_path: Path, task: str = "detect") -> dict | None:
     try:
         with open(csv_path) as f:
             reader = csv.DictReader(f)
@@ -1458,25 +1461,29 @@ def _find_best_epoch(csv_path: Path) -> dict | None:
         if not rows:
             return None
 
-        # Look for mAP column
-        map_col = None
+        target_col = None
+        if task == "classify":
+            candidates = ["metrics/accuracy_top1", "top1"]
+        else:
+            candidates = ["metrics/mAP50-95", "mAP_0.5:0.95"]
+
         for col in rows[0].keys():
             col_stripped = col.strip()
-            if "metrics/mAP50-95" in col_stripped or "mAP_0.5:0.95" in col_stripped:
-                map_col = col
+            if any(c in col_stripped for c in candidates):
+                target_col = col
                 break
 
-        if not map_col:
+        if not target_col:
             return None
 
-        best_row = max(rows, key=lambda r: float(r.get(map_col, "0").strip() or "0"))
+        best_row = max(rows, key=lambda r: float(r.get(target_col, "0").strip() or "0"))
         return best_row
 
     except Exception:
         return None
 
 
-def _display_metrics_from_csv(csv_path: Path) -> None:
+def _display_metrics_from_csv(csv_path: Path, task: str = "detect") -> None:
     try:
         with open(csv_path) as f:
             reader = csv.DictReader(f)
@@ -1485,7 +1492,6 @@ def _display_metrics_from_csv(csv_path: Path) -> None:
         if not rows:
             return
 
-        # Show last epoch metrics
         last_row = rows[-1]
         metrics_table = Table(title="Final Epoch Metrics", box=box.ROUNDED)
         metrics_table.add_column("Metric", style="cyan")
@@ -1502,10 +1508,10 @@ def _display_metrics_from_csv(csv_path: Path) -> None:
         console.print(metrics_table)
         console.print()
 
-        # Show best epoch (Phase 3.3)
-        best_row = _find_best_epoch(csv_path)
+        best_row = _find_best_epoch(csv_path, task)
         if best_row and best_row != last_row:
-            best_table = Table(title="Best Epoch Metrics (by mAP50-95)", box=box.ROUNDED)
+            best_metric_label = "accuracy_top1" if task == "classify" else "mAP50-95"
+            best_table = Table(title=f"Best Epoch Metrics (by {best_metric_label})", box=box.ROUNDED)
             best_table.add_column("Metric", style="cyan")
             best_table.add_column("Value", style="bold green")
 
@@ -1526,11 +1532,8 @@ def _display_metrics_from_csv(csv_path: Path) -> None:
 
 def _generate_training_summary_paragraph(
     config: dict, dataset_info: dict, train_info: dict, train_dir: Path
-) -> str:
-    """
-    Generate an intelligent summary paragraph based on training overview and metrics.
-    Provides assessment and actionable recommendations.
-    """
+) -> tuple[str, list[str]]:
+    task = config.get("task", "detect")
     model = config.get("model", "unknown")
     epochs = config.get("epochs", 0)
     imgsz = config.get("imgsz", 640)
@@ -1538,9 +1541,8 @@ def _generate_training_summary_paragraph(
     elapsed = train_info.get("elapsed_seconds", 0)
     dataset_name = f"{dataset_info['project']} v{dataset_info['version']}"
 
-    # Parse metrics from CSV if available
-    final_metrics = {}
-    best_metrics = {}
+    final_metrics: dict[str, float] = {}
+    best_metrics: dict[str, float] = {}
     results_csv = train_dir / "results.csv"
     if results_csv.exists():
         try:
@@ -1548,21 +1550,25 @@ def _generate_training_summary_paragraph(
                 reader = csv.DictReader(f)
                 rows = list(reader)
             if rows:
-                # Final epoch
                 for key, value in rows[-1].items():
                     try:
                         final_metrics[key.strip()] = float(value.strip())
                     except (ValueError, AttributeError):
                         pass
-                # Best epoch (by mAP50-95)
-                map_col = None
+
+                if task == "classify":
+                    candidates = ["metrics/accuracy_top1", "top1"]
+                else:
+                    candidates = ["metrics/mAP50-95", "mAP_0.5:0.95"]
+
+                target_col = None
                 for col in rows[0].keys():
                     col_stripped = col.strip()
-                    if "metrics/mAP50-95" in col_stripped or "mAP_0.5:0.95" in col_stripped:
-                        map_col = col
+                    if any(c in col_stripped for c in candidates):
+                        target_col = col
                         break
-                if map_col:
-                    best_row = max(rows, key=lambda r: float(r.get(map_col, "0").strip() or "0"))
+                if target_col:
+                    best_row = max(rows, key=lambda r: float(r.get(target_col, "0").strip() or "0"))
                     for key, value in best_row.items():
                         try:
                             best_metrics[key.strip()] = float(value.strip())
@@ -1570,39 +1576,6 @@ def _generate_training_summary_paragraph(
                             pass
         except Exception:
             pass
-
-    # Extract key metrics
-    final_map50 = final_metrics.get("metrics/mAP50(B)", 0)
-    final_map50_95 = final_metrics.get("metrics/mAP50-95(B)", 0)
-    final_precision = final_metrics.get("metrics/precision(B)", 0)
-    final_recall = final_metrics.get("metrics/recall(B)", 0)
-    best_map50 = best_metrics.get("metrics/mAP50(B)", 0)
-    best_map50_95 = best_metrics.get("metrics/mAP50-95(B)", 0)
-    best_epoch = best_metrics.get("epoch", 0)
-    final_epoch = final_metrics.get("epoch", epochs)
-    train_box_loss = final_metrics.get("train/box_loss", 0)
-    val_box_loss = final_metrics.get("val/box_loss", 0)
-    val_cls_loss = final_metrics.get("val/cls_loss", 0)
-
-    # ─── Build assessment ─────────────────────────────────────────────────────
-    paragraphs = []
-
-    # Overall performance assessment
-    if best_map50_95 >= 0.7:
-        quality = "sangat baik"
-        quality_emoji = "[bold green]"
-    elif best_map50_95 >= 0.5:
-        quality = "baik"
-        quality_emoji = "[green]"
-    elif best_map50_95 >= 0.3:
-        quality = "cukup"
-        quality_emoji = "[yellow]"
-    elif best_map50_95 >= 0.1:
-        quality = "kurang"
-        quality_emoji = "[red]"
-    else:
-        quality = "sangat rendah"
-        quality_emoji = "[bold red]"
 
     # Time formatting
     if elapsed > 0:
@@ -1612,7 +1585,145 @@ def _generate_training_summary_paragraph(
     else:
         time_str = "N/A"
 
-    # Main summary paragraph
+    best_epoch = float(best_metrics.get("epoch", 0) or 0)
+    final_epoch = float(final_metrics.get("epoch", epochs) or 0)
+
+    if task == "classify":
+        return _build_classify_summary(
+            model, dataset_name, time_str, final_epoch, best_epoch,
+            final_metrics, best_metrics, config
+        )
+    else:
+        return _build_detection_summary(
+            model, dataset_name, time_str, final_epoch, best_epoch,
+            final_metrics, best_metrics, config
+        )
+
+
+def _build_classify_summary(
+    model: str, dataset_name: str, time_str: str,
+    final_epoch: float, best_epoch: float,
+    final_metrics: dict, best_metrics: dict, config: dict
+) -> tuple[str, list[str]]:
+    best_top1 = best_metrics.get("metrics/accuracy_top1", 0.0)
+    best_top5 = best_metrics.get("metrics/accuracy_top5", 0.0)
+    train_loss = final_metrics.get("train/loss", 0.0)
+    val_loss = final_metrics.get("val/loss", 0.0)
+    epochs = config.get("epochs", 0)
+    imgsz = config.get("imgsz", 224)
+    batch = config.get("batch", -1)
+
+    if best_top1 >= 0.95:
+        quality, quality_emoji = "sangat baik", "[bold green]"
+    elif best_top1 >= 0.90:
+        quality, quality_emoji = "baik", "[green]"
+    elif best_top1 >= 0.80:
+        quality, quality_emoji = "cukup", "[yellow]"
+    elif best_top1 >= 0.70:
+        quality, quality_emoji = "kurang", "[red]"
+    else:
+        quality, quality_emoji = "sangat rendah", "[bold red]"
+
+    summary = (
+        f"Training model [bold]{model}[/] pada dataset [bold]{dataset_name}[/] "
+        f"telah selesai dalam waktu [bold]{time_str}[/] dengan total [bold]{int(final_epoch)}[/] epoch. "
+        f"Performa terbaik dicapai pada epoch [bold]{int(best_epoch)}[/] dengan "
+        f"Top-1 Accuracy = [bold]{best_top1:.4f}[/] dan Top-5 Accuracy = [bold]{best_top5:.4f}[/]. "
+        f"Secara keseluruhan, hasil training ini dinilai {quality_emoji}{quality}[/]."
+    )
+
+    recommendations: list[str] = []
+
+    if final_epoch > 0 and best_epoch > 0:
+        epoch_ratio = best_epoch / final_epoch
+        if epoch_ratio < 0.2 and final_epoch > 10:
+            recommendations.append(
+                f"[yellow]Overfitting terdeteksi:[/] Performa terbaik di epoch awal "
+                f"({int(best_epoch)}/{int(final_epoch)}). Model mulai overfit setelahnya. "
+                "Coba kurangi epoch, tambah augmentasi, naikkan dropout, atau gunakan early stopping (patience lebih kecil)."
+            )
+
+    if best_top1 < 0.5:
+        recommendations.append(
+            "[yellow]Underfitting terdeteksi:[/] Top-1 accuracy sangat rendah. Kemungkinan penyebab: "
+            "dataset terlalu kecil, label kurang akurat, atau model terlalu kecil untuk task ini. "
+            "Coba: (1) tambah data training, (2) periksa kualitas gambar per kelas, "
+            "(3) gunakan model lebih besar (m/l/x), (4) tambah epoch."
+        )
+
+    if train_loss > 0 and val_loss > 0:
+        loss_ratio = val_loss / train_loss
+        if loss_ratio > 2.0:
+            recommendations.append(
+                f"[yellow]Gap train/val loss besar:[/] val_loss ({val_loss:.3f}) "
+                f"jauh lebih tinggi dari train_loss ({train_loss:.3f}). "
+                "Ini menandakan overfitting. Coba: tambah augmentasi (heavy), naikkan dropout, atau tambah data."
+            )
+
+    if best_top1 > 0 and best_top5 > 0:
+        gap = best_top5 - best_top1
+        if gap > 0.15 and best_top1 < 0.8:
+            recommendations.append(
+                f"[yellow]Gap Top-1 vs Top-5 besar ({gap:.2f}):[/] Model sering bingung antara kelas yang mirip. "
+                "Coba: periksa apakah ada kelas yang visual-nya mirip, tambah data per kelas, atau gunakan image size lebih besar."
+            )
+
+    dropout = config.get("dropout", 0.0)
+    if best_top1 < 0.7 and dropout == 0.0:
+        recommendations.append("[cyan]Dropout belum digunakan:[/] Coba tambahkan dropout (0.1-0.3) untuk mengurangi overfitting.")
+
+    if epochs <= 20 and best_top1 < 0.8:
+        recommendations.append(
+            f"[cyan]Epoch terlalu sedikit:[/] Dengan hanya {epochs} epoch, model mungkin belum konvergen. "
+            "Coba naikkan ke 50-150 epoch untuk hasil lebih baik."
+        )
+
+    if imgsz < 224 and best_top1 < 0.7:
+        recommendations.append(f"[cyan]Image size kecil ({imgsz}):[/] Untuk klasifikasi, gunakan minimal 224. Coba naikkan ke 224 atau 320.")
+
+    if batch == -1:
+        recommendations.append("[dim]Auto-batch digunakan — GPU memory dioptimalkan secara otomatis.[/]")
+
+    if best_top1 >= 0.8 and not recommendations:
+        recommendations.append(
+            "[green]Model sudah memiliki performa yang baik![/] "
+            "Untuk peningkatan lebih lanjut, coba: fine-tune dengan learning rate lebih kecil, "
+            "tambah data, atau gunakan Test-Time Augmentation (TTA) saat inference."
+        )
+    elif best_top1 >= 0.95:
+        recommendations.insert(0, "[green]Performa sangat baik![/] Model siap untuk deployment. Pertimbangkan export ke ONNX/TensorRT untuk inference lebih cepat.")
+
+    return summary, recommendations
+
+
+def _build_detection_summary(
+    model: str, dataset_name: str, time_str: str,
+    final_epoch: float, best_epoch: float,
+    final_metrics: dict, best_metrics: dict, config: dict
+) -> tuple[str, list[str]]:
+    epochs = config.get("epochs", 0)
+    imgsz = config.get("imgsz", 640)
+    batch = config.get("batch", -1)
+
+    best_map50 = best_metrics.get("metrics/mAP50(B)", 0)
+    best_map50_95 = best_metrics.get("metrics/mAP50-95(B)", 0)
+    final_precision = final_metrics.get("metrics/precision(B)", 0)
+    final_recall = final_metrics.get("metrics/recall(B)", 0)
+    train_box_loss = final_metrics.get("train/box_loss", 0)
+    val_box_loss = final_metrics.get("val/box_loss", 0)
+    val_cls_loss = final_metrics.get("val/cls_loss", 0)
+
+    if best_map50_95 >= 0.7:
+        quality, quality_emoji = "sangat baik", "[bold green]"
+    elif best_map50_95 >= 0.5:
+        quality, quality_emoji = "baik", "[green]"
+    elif best_map50_95 >= 0.3:
+        quality, quality_emoji = "cukup", "[yellow]"
+    elif best_map50_95 >= 0.1:
+        quality, quality_emoji = "kurang", "[red]"
+    else:
+        quality, quality_emoji = "sangat rendah", "[bold red]"
+
     summary = (
         f"Training model [bold]{model}[/] pada dataset [bold]{dataset_name}[/] "
         f"telah selesai dalam waktu [bold]{time_str}[/] dengan total [bold]{int(final_epoch)}[/] epoch. "
@@ -1620,12 +1731,9 @@ def _generate_training_summary_paragraph(
         f"mAP50 = [bold]{best_map50:.4f}[/] dan mAP50-95 = [bold]{best_map50_95:.4f}[/]. "
         f"Secara keseluruhan, hasil training ini dinilai {quality_emoji}{quality}[/]."
     )
-    paragraphs.append(summary)
 
-    # ─── Diagnosis & Recommendations ──────────────────────────────────────────
-    recommendations = []
+    recommendations: list[str] = []
 
-    # Check for overfitting (best epoch much earlier than final)
     if final_epoch > 0 and best_epoch > 0:
         epoch_ratio = best_epoch / final_epoch
         if epoch_ratio < 0.2 and final_epoch > 10:
@@ -1635,7 +1743,6 @@ def _generate_training_summary_paragraph(
                 "Coba kurangi epoch, tambah augmentasi, atau gunakan early stopping (patience lebih kecil)."
             )
 
-    # Check for underfitting (low metrics overall)
     if best_map50_95 < 0.2 and best_map50 < 0.5:
         recommendations.append(
             "[yellow]Underfitting terdeteksi:[/] mAP sangat rendah. Kemungkinan penyebab: "
@@ -1644,7 +1751,6 @@ def _generate_training_summary_paragraph(
             "(3) gunakan model lebih besar (m/l/x), (4) tambah epoch."
         )
 
-    # Check precision vs recall imbalance
     if final_precision > 0 and final_recall > 0:
         if final_precision > 0.8 and final_recall < 0.3:
             recommendations.append(
@@ -1658,7 +1764,6 @@ def _generate_training_summary_paragraph(
                 "Coba: tambah negative samples, periksa label yang ambigu, atau naikkan confidence threshold."
             )
 
-    # Check val loss vs train loss (generalization gap)
     if train_box_loss > 0 and val_box_loss > 0:
         loss_ratio = val_box_loss / train_box_loss
         if loss_ratio > 2.0:
@@ -1669,7 +1774,6 @@ def _generate_training_summary_paragraph(
                 "gunakan dropout, atau tambah data."
             )
 
-    # Check classification loss
     if val_cls_loss > 3.0:
         recommendations.append(
             f"[yellow]Classification loss tinggi ({val_cls_loss:.3f}):[/] "
@@ -1678,7 +1782,6 @@ def _generate_training_summary_paragraph(
             "tambah data per kelas, atau gunakan label smoothing."
         )
 
-    # Epoch count recommendations
     if epochs <= 20 and best_map50_95 < 0.5:
         recommendations.append(
             "[cyan]Epoch terlalu sedikit:[/] Dengan hanya "
@@ -1686,20 +1789,15 @@ def _generate_training_summary_paragraph(
             "Coba naikkan ke 100-300 epoch untuk hasil lebih baik."
         )
 
-    # Image size recommendation
     if imgsz < 640 and best_map50_95 < 0.4:
         recommendations.append(
             f"[cyan]Image size kecil ({imgsz}):[/] "
             "Untuk objek kecil atau detail, coba naikkan ke 640 atau 1280."
         )
 
-    # Batch size recommendation
     if batch == -1:
-        recommendations.append(
-            "[dim]Auto-batch digunakan — GPU memory dioptimalkan secara otomatis.[/]"
-        )
+        recommendations.append("[dim]Auto-batch digunakan — GPU memory dioptimalkan secara otomatis.[/]")
 
-    # Good performance acknowledgment
     if best_map50_95 >= 0.5 and not recommendations:
         recommendations.append(
             "[green]Model sudah memiliki performa yang baik![/] "
@@ -1786,7 +1884,7 @@ def step_summary(train_info: dict, config: dict, dataset_info: dict) -> None:
     # Metrics from CSV
     results_csv = train_dir / "results.csv"
     if results_csv.exists():
-        _display_metrics_from_csv(results_csv)
+        _display_metrics_from_csv(results_csv, config.get("task", "detect"))
     else:
         # Fallback: extract metrics directly from YOLO results object
         results_obj = train_info.get("results")
